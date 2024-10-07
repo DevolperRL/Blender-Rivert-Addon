@@ -3,3 +3,6 @@
 
 Here is a tutorial how to use it:
 https://youtu.be/Tr0Q3tSStJo
+
+If you want support me:
+patreon.com/pilotRL
