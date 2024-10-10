@@ -1,8 +1,7 @@
 import bpy
 import bmesh
-from bpy.props import FloatProperty, IntProperty, PointerProperty
+from bpy.props import FloatProperty, IntProperty, BoolProperty, PointerProperty
 from mathutils import Matrix
-import math
 
 bl_info = {
     "name": "Rivet Tool",
@@ -20,15 +19,21 @@ class OBJECT_OT_rivet_tool(bpy.types.Operator):
         name="Spacing",
         default=0.1,
         min=0.0,
-        max=0.222,  # Limiting max spacing to 0.222
+        max=0.222,
         description="Spacing between each rivet"
     )
 
     rivet_count: IntProperty(
         name="Number of Rivets",
         default=10,
-        min=1,  # Ensure the minimum is 1 to avoid negative values
+        min=1,
         description="Number of rivets to place per edge",
+    )
+
+    auto_mode: BoolProperty(
+        name="Auto Mode",
+        default=False,
+        description="Automatically distribute rivets based on edge length"
     )
 
     def execute(self, context):
@@ -51,7 +56,7 @@ class OBJECT_OT_rivet_tool(bpy.types.Operator):
             self.report({'ERROR'}, "You must be in edit mode with selected edges.")
             return {'CANCELLED'}
         
-        # Get total length of selected edges
+        # Get selected edges in edit mode
         bm = bmesh.from_edit_mesh(target_object.data)
         selected_edges = [e for e in bm.edges if e.select]
 
@@ -59,31 +64,37 @@ class OBJECT_OT_rivet_tool(bpy.types.Operator):
             self.report({'ERROR'}, "No valid edges selected.")
             return {'CANCELLED'}
 
-        # Place rivets along each selected edge with the specified number and spacing
-        for edge in selected_edges:
-            self.place_rivets_along_edge(rivet_object, target_object, edge, context)
-        
+        # Distribute rivets across the selected edges
+        if self.auto_mode:
+            total_length = sum([edge.calc_length() for edge in selected_edges])
+            if total_length == 0:
+                self.report({'ERROR'}, "Selected edges have no length.")
+                return {'CANCELLED'}
+
+            # Distribute the rivets equally across all selected edges
+            rivets_per_length = self.rivet_count / total_length
+            for edge in selected_edges:
+                edge_rivet_count = max(1, int(edge.calc_length() * rivets_per_length))
+                self.place_rivets_along_edge(rivet_object, target_object, edge, edge_rivet_count, context)
+        else:
+            # Place rivet_count rivets on each edge
+            for edge in selected_edges:
+                self.place_rivets_along_edge(rivet_object, target_object, edge, self.rivet_count, context)
+
         return {'FINISHED'}
 
-    def place_rivets_along_edge(self, rivet_object, target_object, edge, context):
+    def place_rivets_along_edge(self, rivet_object, target_object, edge, rivet_count, context):
         """Place rivets along a single edge with correct number and spacing"""
         edge_length = edge.calc_length()
 
-        # Ensure rivet_count is at least 1 (handled by the IntProperty)
-        rivet_count = max(1, self.rivet_count)
+        # Ensure rivet_count is at least 1
+        rivet_count = max(1, rivet_count)
 
-        # Adjust spacing based on the edge length and max allowed spacing
-        max_spacing = min(self.spacing, 0.222)
+        # Adjust spacing based on the edge length and number of rivets
         actual_spacing = edge_length / (rivet_count - 1) if rivet_count > 1 else 0
 
-        # If the spacing exceeds the limit, reduce it
-        if actual_spacing > max_spacing:
-            actual_spacing = max_spacing
-
-        # Adjust for odd rivet counts, to remove the middle gap
-        if rivet_count % 2 != 0:  # Odd number of rivets
-            center_rivet_position = (edge.verts[0].co + edge.verts[1].co) / 2
-            offset = actual_spacing / 2  # Adjust offset for symmetry
+        # Clamp the spacing so it doesn't exceed user-defined spacing
+        actual_spacing = min(self.spacing, actual_spacing)
 
         # Direction of the edge and calculate the normal
         edge_direction = (edge.verts[1].co - edge.verts[0].co).normalized()
@@ -96,18 +107,13 @@ class OBJECT_OT_rivet_tool(bpy.types.Operator):
 
         rotation_matrix = Matrix((x_axis, y_axis, z_axis)).transposed()
 
-        # Calculate midpoint of the edge
-        mid_point = (edge.verts[0].co + edge.verts[1].co) * 0.5
+        # Calculate the start point of the edge
+        start_point = edge.verts[0].co
 
-        # Place rivets symmetrically from the middle
-        half_rivet_count = rivet_count // 2
-
-        for i in range(-half_rivet_count, half_rivet_count + 1):
-            if rivet_count % 2 == 0 and i == 0:
-                continue  # Skip center rivet if the count is even
-
+        # Place rivets along the edge from start to end
+        for i in range(rivet_count):
             offset = i * actual_spacing
-            loc = mid_point + edge_direction * offset
+            loc = start_point + edge_direction * offset
 
             # Duplicate and place the rivet
             new_rivet = rivet_object.copy()
@@ -119,7 +125,6 @@ class OBJECT_OT_rivet_tool(bpy.types.Operator):
             context.collection.objects.link(new_rivet)
 
 
-# Panel UI for the rivet tool
 class OBJECT_PT_rivet_tool_panel(bpy.types.Panel):
     bl_label = "Rivet Tool"
     bl_idname = "OBJECT_PT_rivet_tool_panel"
@@ -135,19 +140,38 @@ class OBJECT_PT_rivet_tool_panel(bpy.types.Panel):
         layout.label(text="Rivet Tool")
         layout.prop(tool_settings, "rivet_object", text="Rivet Object")
         layout.prop(context.scene, "rivet_tool_settings")
+        layout.prop(context.scene.rivet_tool_settings, "spacing")
+        layout.prop(context.scene.rivet_tool_settings, "rivet_count")
+        layout.prop(context.scene.rivet_tool_settings, "auto_mode")
         layout.operator("object.rivet_tool")
 
 
-# Property group to hold tool settings
 class RivetToolSettings(bpy.types.PropertyGroup):
     rivet_object: PointerProperty(
         name="Rivet Object",
         type=bpy.types.Object,
         description="Select the object to be used as the rivet"
     )
+    spacing: FloatProperty(
+        name="Spacing",
+        default=0.1,
+        min=0.0,
+        max=0.222,
+        description="Spacing between each rivet"
+    )
+    rivet_count: IntProperty(
+        name="Number of Rivets",
+        default=10,
+        min=1,
+        description="Number of rivets to place per edge"
+    )
+    auto_mode: BoolProperty(
+        name="Auto Mode",
+        default=False,
+        description="Automatically distribute rivets based on edge length"
+    )
 
 
-# Register classes and properties
 def register():
     bpy.utils.register_class(OBJECT_OT_rivet_tool)
     bpy.utils.register_class(OBJECT_PT_rivet_tool_panel)
